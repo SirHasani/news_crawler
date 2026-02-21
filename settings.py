@@ -15,7 +15,8 @@ NEWSPIDER_MODULE = "news_crawler.spiders"
 ADDONS = {}
 
 ITEM_PIPELINES = {
-    "news_crawler.pipelines.NewsItemValidationPipeline": 300,  # اول اعتبارسنجی؛ آیتم ناقص Drop + Alert
+    "news_crawler.pipelines.BodyToMarkdownPipeline": 250,  # تبدیل body به مارک‌داون + پاک‌سازی
+    "news_crawler.pipelines.NewsItemValidationPipeline": 300,  # اعتبارسنجی؛ آیتم ناقص Drop + Alert
     "news_crawler.pipelines.NewsItemSqlitePipeline": 400,
 }
 

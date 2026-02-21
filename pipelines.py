@@ -9,18 +9,18 @@
 
 
 import logging
+import os
 import sqlite3
 import json
 import uuid
 from scrapy.exceptions import DropItem
 from news_crawler.items import NewsItem
+from news_crawler.utils import body_to_markdown, sanitize_body_text
 
 logger = logging.getLogger(__name__)
 
-# فیلدهای اجباری طبق PRD (غیر از lead_text و author_or_reporter که Optional هستند)
+# فیلدهای اجباری برای اعتبارسنجی. Optional طبق PRD: lead_text, author_or_reporter
 REQUIRED_NEWS_ITEM_FIELDS = (
-    "article_id",
-    "source_domain",
     "url",
     "title",
     "body_text",
@@ -28,8 +28,6 @@ REQUIRED_NEWS_ITEM_FIELDS = (
     "tags",
     "publish_date_raw",
     "publish_date_utc",
-    "crawl_timestamp",
-    "has_media",
 )
 
 
@@ -91,6 +89,28 @@ class NewsItemValidationPipeline:
         raise DropItem(alert_msg)
 
 
+class BodyToMarkdownPipeline:
+    """
+    body_text را به مارک‌داون تمیز تبدیل می‌کند و بعد پاک‌سازی (حذف نویز) اعمال می‌کند.
+    اگر اسپایدر HTML بدنه بفرستد، هدرها و لیست‌ها در مارک‌داون حفظ می‌شوند.
+    """
+
+    def process_item(self, item, spider):
+        if not isinstance(item, NewsItem):
+            return item
+        raw = item.get("body_text")
+        if raw is None:
+            return item
+        if isinstance(raw, list):
+            raw = "\n".join(str(x).strip() for x in raw if x)
+        raw = str(raw).strip()
+        if not raw:
+            return item
+        markdown = body_to_markdown(raw)
+        item["body_text"] = sanitize_body_text(markdown)
+        return item
+
+
 def _to_scalar(value):
     """تبدیل مقدار به اسکالر برای SQLite؛ ItemLoader گاهی لیست برمی‌گرداند."""
     if value is None:
@@ -112,8 +132,10 @@ class NewsItemSqlitePipeline:
     """
 
     def open_spider(self, spider):
-        # فقط اگر آیتم از نوع NewsItem بود دیتابیس را باز کن
-        self.conn = sqlite3.connect("news_items.db")
+        # مسیر ثابت: همیشه داخل پوشهٔ پروژه (کنار scrapy.cfg) تا با هر cwd ذخیره در یک فایل باشد
+        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        db_path = os.path.join(project_dir, "news_items.db")
+        self.conn = sqlite3.connect(db_path)
         self.cursor = self.conn.cursor()
         # جدول اگر وجود نداشته باشد ساخته می‌شود
         self.cursor.executescript("""
@@ -153,7 +175,7 @@ class NewsItemSqlitePipeline:
             has_media_val = has_media_val[0]
         has_media_int = 1 if has_media_val else 0
         self.cursor.execute("""
-            INSERT INTO news_items (
+            INSERT OR IGNORE INTO news_items (
                 id, article_id, source_domain, url, title, lead_text,
                 body_text, author_or_reporter, category, tags,
                 publish_date_raw, publish_date_utc, crawl_timestamp, has_media
@@ -175,6 +197,11 @@ class NewsItemSqlitePipeline:
             has_media_int,
         ))
         self.conn.commit()
+        url = _to_scalar(item.get("url")) or ""
+        if self.cursor.rowcount > 0:
+            logger.info("DB saved: %s", url[:80])
+        else:
+            logger.debug("DB duplicate (skipped): %s", url[:80])
         return item
 
     def close_spider(self, spider):

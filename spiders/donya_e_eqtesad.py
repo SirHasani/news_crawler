@@ -40,7 +40,11 @@ class DonyaEEqtesadSpider(scrapy.Spider):
         lead = response.css("h2.uptitle::text").get()
         loader.add_value("lead_text", lead.strip() if lead else "")
 
-        loader.add_css("body_text", "div.article-body p::text, div#echo-detail p::text, div#echo-detail h2::text")
+        body_html = response.css("div.article-body").get() or response.css("div#echo-detail").get()
+        if body_html:
+            loader.add_value("body_text", body_html)
+        else:
+            loader.add_css("body_text", "div.article-body p::text, div#echo-detail p::text, div#echo-detail h2::text")
 
         author = response.xpath('//*[@id="news-page-article"]/header/div/div[1]/div[3]/span/span[2]/text()').get()
         if not author:

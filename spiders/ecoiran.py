@@ -49,12 +49,15 @@ class EcoiranSpider(scrapy.Spider):
         loader.add_css("title", "h1[itemprop='headline']::text")
         loader.add_css("lead_text", "div.lead::text")
 
-        body_selectors = (
-            "div.content p::text, div.article-body p::text, "
-            "div.post-content p::text, div.entry-content p::text, "
-            "[itemprop='articleBody'] p::text, div.body p::text, article p::text"
-        )
-        loader.add_css("body_text", body_selectors)
+        body_html = response.css("div.content").get() or response.css("div.article-body").get()
+        if body_html:
+            loader.add_value("body_text", body_html)
+        else:
+            loader.add_css(
+                "body_text",
+                "div.content p::text, div.article-body p::text, "
+                "div.post-content p::text, [itemprop='articleBody'] p::text",
+            )
 
         loader.add_css("author_or_reporter", "span.postCode::text")
         loader.add_xpath("category", "/html/body/main/div[1]/section[2]/div[2]/div[1]/div/div[2]/a/text()")

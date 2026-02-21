@@ -2,6 +2,11 @@ import re
 import pytz
 import jdatetime
 
+try:
+    import html2text
+except ImportError:
+    html2text = None
+
 PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
 ENGLISH_DIGITS = "0123456789"
 DIGIT_TABLE = str.maketrans(PERSIAN_DIGITS, ENGLISH_DIGITS)
@@ -36,22 +41,57 @@ BODY_TEXT_NOISE_PATTERNS = re.compile(
 )
 
 
+def body_to_markdown(value: str) -> str:
+    """
+    متن یا HTML بدنهٔ خبر را به مارک‌داون تمیز تبدیل می‌کند.
+    - اگر مقدار شبیه HTML باشد (حاوی < و >)، با html2text به مارک‌داون تبدیل می‌شود.
+    - وگرنه متن ساده در نظر گرفته می‌شود و فقط پاراگراف‌بندی نرمال می‌شود (\\n\\n بین پاراگراف‌ها).
+    """
+    if not value or not isinstance(value, str):
+        return value or ""
+    s = value.strip()
+    if not s:
+        return ""
+    # تشخیص HTML
+    if "<" in s and ">" in s and html2text is not None:
+        try:
+            h = html2text.HTML2Text()
+            h.ignore_links = True   # فقط متن لینک بیاید، آدرس لینک ذخیره نشود (خروجی تمیز)
+            h.ignore_images = True  # بدون لینک/مسیر تصویر
+            h.body_width = 0
+            h.ignore_emphasis = False
+            out = h.handle(s)
+            return out.strip()
+        except Exception:
+            pass
+    # متن ساده: نرمال‌سازی پاراگراف‌ها
+    return re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]+", " ", s)).strip()
+
+
+# الگوی مارک‌داون لینک [متن](آدرس) برای حذف آدرس و نگه‌داشتن فقط متن
+MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]*)\]\([^)]+\)")
+
+
+def _strip_markdown_links(text: str) -> str:
+    """تبدیل [متن](آدرس) به فقط «متن» تا body_text بدون لینک و تمیز باشد."""
+    return MARKDOWN_LINK_PATTERN.sub(r"\1", text)
+
+
 def sanitize_body_text(text: str) -> str:
     """
     پاک‌سازی body_text طبق PRD: حذف اسکریپت، دکمه‌های شبکه اجتماعی و لینک‌های «مطالب مرتبط».
-    فقط محتوای اصلی خبر باقی می‌ماند.
+    لینک‌های مارک‌داون [متن](url) به فقط متن تبدیل می‌شوند. فقط محتوای اصلی خبر باقی می‌ماند.
     """
     if not text or not isinstance(text, str):
         return text or ""
+    text = _strip_markdown_links(text)
     lines = []
     for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
-        # خطوطی که فقط شامل الگوی نویز هستند حذف می‌شوند
         if BODY_TEXT_NOISE_PATTERNS.search(line):
             continue
-        # خطوط خیلی کوتاهِ فقط نماد/انگلیسیِ شبیه کد (مثلاً یک کلمه تکی) را نگاه دار؛ فقط خطوط واضحاً اسکریپتی را حذف کن
         lines.append(line)
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
@@ -66,20 +106,41 @@ def extract_news_id(text: str):
     match = re.search(r'\d+', text)
     return match.group() if match else None
 
+import jdatetime
+import pytz
+from datetime import datetime
+
+
 def shamsi_to_utc(value):
-    year, month, day, hour, minute = map(int, value.split('-'))
-    
-    # تبدیل به میلادی
-    jalali_dt = jdatetime.JalaliDateTime(year, month, day, hour, minute)
-    gregorian_dt = jalali_dt.to_gregorian()
-    
-    iran_tz = pytz.timezone("Asia/Tehran")
-    localized_dt = iran_tz.localize(gregorian_dt)
-    
-    # تبدیل به UTC
-    utc_dt = localized_dt.astimezone(pytz.UTC)
-    
-    return utc_dt.isoformat()
+    if not value:
+        return value
+
+    try:
+        # Normalize format (handle T separator)
+        value = value.replace("T", " ")
+
+        # Try parsing with seconds
+        try:
+            jalali_dt = jdatetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            # Try without seconds
+            jalali_dt = jdatetime.datetime.strptime(value, "%Y-%m-%d %H:%M")
+
+        # Convert to Gregorian
+        gregorian_dt = jalali_dt.togregorian()
+
+        # Localize to Iran timezone
+        iran_tz = pytz.timezone("Asia/Tehran")
+        localized_dt = iran_tz.localize(gregorian_dt)
+
+        # Convert to UTC
+        utc_dt = localized_dt.astimezone(pytz.UTC)
+
+        return utc_dt.isoformat()
+
+    except Exception as e:
+        print(f"Date conversion error: {value} -> {e}")
+        return value
 
 def extract_khabar_code(text: str):
 
