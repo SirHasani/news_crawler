@@ -1,15 +1,37 @@
 import re
 import pytz
 import jdatetime
+from datetime import datetime
 
 try:
     import html2text
 except ImportError:
     html2text = None
 
-PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
-ENGLISH_DIGITS = "0123456789"
-DIGIT_TABLE = str.maketrans(PERSIAN_DIGITS, ENGLISH_DIGITS)
+DIGIT_TABLE = str.maketrans(
+    {
+        "\u06f0": "0",
+        "\u06f1": "1",
+        "\u06f2": "2",
+        "\u06f3": "3",
+        "\u06f4": "4",
+        "\u06f5": "5",
+        "\u06f6": "6",
+        "\u06f7": "7",
+        "\u06f8": "8",
+        "\u06f9": "9",
+        "\u0660": "0",
+        "\u0661": "1",
+        "\u0662": "2",
+        "\u0663": "3",
+        "\u0664": "4",
+        "\u0665": "5",
+        "\u0666": "6",
+        "\u0667": "7",
+        "\u0668": "8",
+        "\u0669": "9",
+    }
+)
 
 # الگوهای خطوطی که باید از body_text حذف شوند (اسکریپت، دکمه شبکه اجتماعی، مطالب مرتبط)
 BODY_TEXT_NOISE_PATTERNS = re.compile(
@@ -97,6 +119,8 @@ def sanitize_body_text(text: str) -> str:
 
 
 def fa_to_en_digits(text: str) -> str:
+    if not isinstance(text, str):
+        return text
     return text.translate(DIGIT_TABLE)
 
 
@@ -106,9 +130,6 @@ def extract_news_id(text: str):
     match = re.search(r'\d+', text)
     return match.group() if match else None
 
-import jdatetime
-import pytz
-from datetime import datetime
 
 
 def shamsi_to_utc(value):
@@ -116,15 +137,44 @@ def shamsi_to_utc(value):
         return value
 
     try:
-        # Normalize format (handle T separator)
-        value = value.replace("T", " ")
+        # Normalize digits and separators.
+        normalized_value = fa_to_en_digits(value).strip()
 
-        # Try parsing with seconds
-        try:
-            jalali_dt = jdatetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            # Try without seconds
-            jalali_dt = jdatetime.datetime.strptime(value, "%Y-%m-%d %H:%M")
+        # If value already looks Gregorian, parse as Gregorian.
+        year_match = re.match(r"^(\d{4})[-/]", normalized_value)
+        year = int(year_match.group(1)) if year_match else None
+        if year is not None and year >= 1900:
+            iso_candidate = normalized_value
+            if iso_candidate.endswith("Z"):
+                iso_candidate = iso_candidate[:-1] + "+00:00"
+            try:
+                gregorian_iso = datetime.fromisoformat(iso_candidate)
+                if gregorian_iso.tzinfo is None:
+                    gregorian_iso = pytz.timezone("Asia/Tehran").localize(gregorian_iso)
+                return gregorian_iso.astimezone(pytz.UTC).isoformat()
+            except ValueError:
+                pass
+
+        # Normalize Shamsi formats (handle T separator and slash-separated date).
+        normalized_value = normalized_value.replace("/", "-").replace("T", " ")
+        if re.match(r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}$", normalized_value):
+            normalized_value = f"{normalized_value[:10]} {normalized_value[11:13]}:{normalized_value[14:16]}"
+
+        # Try parsing supported formats
+        parse_formats = (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+        )
+        jalali_dt = None
+        for date_format in parse_formats:
+            try:
+                jalali_dt = jdatetime.datetime.strptime(normalized_value, date_format)
+                break
+            except ValueError:
+                continue
+        if jalali_dt is None:
+            raise ValueError(f"Unsupported date format: {value}")
 
         # Convert to Gregorian
         gregorian_dt = jalali_dt.togregorian()

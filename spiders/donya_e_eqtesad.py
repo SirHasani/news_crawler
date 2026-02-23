@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import uuid
 from datetime import datetime, UTC
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import scrapy
 from scrapy.loader import ItemLoader
@@ -13,24 +14,87 @@ class DonyaEEqtesadSpider(scrapy.Spider):
     name = "donya-e-eqtesad"
     allowed_domains = ["donya-e-eqtesad.com"]
 
+    custom_settings = {
+        "LOG_LEVEL": "INFO",
+        # اختیاری:
+        # "CLOSESPIDER_ITEMCOUNT": 5000,
+    }
+
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.seen_article_urls = set()
+        self.seen_list_pages = set()
+
     def start_requests(self):
-        for page in range(1, 100):
-            url = f"{LIST_BASE}/" if page == 1 else f"{LIST_BASE}/?page={page}"
-            yield scrapy.Request(url, callback=self.parse_list_page)
+        # صفحه اول: دقیقاً مثل کد خودت / بدون page
+        yield scrapy.Request(self._build_list_url(1), callback=self.parse_list_page, meta={"page": 1})
 
     def parse_list_page(self, response):
+        page = response.meta.get("page", 1)
+
+        # ایمنی: تکراری نبودن list-page
+        if response.url in self.seen_list_pages:
+            return
+        self.seen_list_pages.add(response.url)
+
+        # === هیچ تغییری در selector لیست نمی‌دهیم ===
         links = response.css("div.news-grouped-by-date a[href]::attr(href)").getall()
-        seen = set()
+
+        # Stop 1: صفحه خالی
+        if not links:
+            self.logger.info("No links found. Stop. page=%s url=%s", page, response.url)
+            return
+
+        new_count = 0
+
         for href in links:
             if not href:
                 continue
+
             full_url = response.urljoin(href)
-            if full_url in seen:
+
+            # جلوگیری از تکراری‌ها بین صفحات
+            if full_url in self.seen_article_urls:
                 continue
-            seen.add(full_url)
+
+            self.seen_article_urls.add(full_url)
+            new_count += 1
+
             yield scrapy.Request(full_url, callback=self.parse_news)
 
+        # Stop 2: صفحه چیزی جدید نداشت => پایان pagination
+        if new_count == 0:
+            self.logger.info("No NEW articles. Stop. page=%s url=%s", page, response.url)
+            return
+        
+        # صفحه بعد
+        next_page = page + 1
+        yield scrapy.Request(
+            self._build_list_url(next_page),
+            callback=self.parse_list_page,
+            meta={"page": next_page},
+        )
+
+    def _build_list_url(self, page: int) -> str:
+        """
+        مثل کد خودت:
+        page=1 -> LIST_BASE + "/"
+        page>1 -> LIST_BASE + "/?page=N"
+        """
+        if page <= 1:
+            return f"{LIST_BASE}/"
+
+        # اگر LIST_BASE روزی query داشت، امن می‌سازیم
+        base = f"{LIST_BASE}/"
+        p = urlparse(base)
+        qs = parse_qs(p.query)
+        qs["page"] = [str(page)]
+        new_query = urlencode(qs, doseq=True)
+        return urlunparse((p.scheme, p.netloc, p.path, p.params, new_query, p.fragment))
+
     def parse_news(self, response):
+        # === هیچ تغییری در selectorها و منطق parse_news نمی‌دهیم ===
         loader = ItemLoader(item=NewsItem(), response=response)
         loader.add_value("source_domain", self.allowed_domains[0])
         loader.add_value("url", response.url)
